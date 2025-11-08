@@ -49,7 +49,7 @@ public class Draw : MonoBehaviour
         colorMap = new Color[totalXPixels * totalYPixels];
         generatedTexture = new Texture2D(totalYPixels, totalXPixels, TextureFormat.RGBA32, false); //Generating a new texture with width and height
         generatedTexture.filterMode = FilterMode.Point;
-        material.SetTexture("_BaseMap", generatedTexture); //Giving our material the new texture
+        material.SetTexture("_MainTex", generatedTexture); //Giving our material the new texture
  
         ResetColor(); //Resetting the color of the canvas to white
  
@@ -69,11 +69,12 @@ public class Draw : MonoBehaviour
     {
         Ray ray = cam.ScreenPointToRay(Input.mousePosition);//Get a ray from the center of the camera to the mouse position
         RaycastHit hit;
-        if (Physics.Raycast(ray, out hit, 10f))//Check if the ray hits something
+        if (Physics.Raycast(ray, out hit, 100f))//Check if the ray hits something
         {
             point.position = hit.point;//Move to pointer to the place where the mouse intersects the canvas
             xPixel = (int)((point.localPosition.x - topLeftCorner.localPosition.x) * xMult); //Calculate the position in pixels
             yPixel = (int)((point.localPosition.y - topLeftCorner.localPosition.y) * yMult);
+            Debug.Log("Raycast Hit!");
             ChangePixelsAroundPoint(); //Call the next function
         }
         else
