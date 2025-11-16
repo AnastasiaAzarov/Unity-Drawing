@@ -1,13 +1,16 @@
 using UnityEngine;
 using System.Collections.Generic;
-using System.Linq; // Added for Linq usage
+using System.Linq; 
 
 public class Draw : MonoBehaviour
 {
     [Header("Arduino Integration")]
-    // Reference the component that reads the serial data
+    // Reference the component that reads the touch sensor data (UnoTouchSensors)
     public UnoTouchSensors colorReader; 
     
+    // Reference the component that reads the position data (FeatherSenseReader)
+    public FeatherSenseReader positionReader; 
+
     // Define the base colors associated with the sensors
     [Header("Paint Colors")]
     public Color redBase = Color.red;
@@ -15,9 +18,8 @@ public class Draw : MonoBehaviour
     public Color blueBase = Color.blue;
     public Color whiteBase = Color.white;
     public Color blackBase = Color.black;
-    public Color mixErrorColor = Color.magenta; // Color for error state (>2 sensors)
+    public Color mixErrorColor = Color.magenta; 
 
-    // A list of the base colors in the same order as the Arduino sketch (R, Y, B, W, K)
     Color[] baseColors;
 
     [Header("Drawing Settings")]
@@ -26,13 +28,15 @@ public class Draw : MonoBehaviour
     public int totalYPixels = 512;
     public int brushSize = 4;
     
-    [HideInInspector] // Hidden because it's now set internally
+    [HideInInspector] 
     public Color brushColor; 
     
     public bool useInterpolation = true;
     public Transform topLeftCorner;
     public Transform bottomRightCorner;
-    public Transform point;
+    
+    public Transform point; // The visual brush point
+    
     public Material material;
 
     [Header("Internal")]
@@ -43,52 +47,68 @@ public class Draw : MonoBehaviour
     bool pressedLastFrame = false;
     int lastX = 0;
     int lastY = 0;
-    float xMult;
-    float yMult;
+    float xMult; 
+    float yMult; 
+
+    // World space boundaries based on the corners
+    float minXWorld;
+    float maxXWorld;
+    float minYWorld;
+    float maxYWorld;
+    float baseZWorld; // Store the Z position to keep the point on the plane
 
     private void Start()
     {
-        // Check for the required component
-        if (colorReader == null)
+        if (colorReader == null || positionReader == null || point == null || topLeftCorner == null || bottomRightCorner == null)
         {
-            Debug.LogError("The Draw script requires an ArduinoColorReader reference. Please assign it in the Inspector.");
+            Debug.LogError("The Draw script requires all references (colorReader, positionReader, point, topLeftCorner, bottomRightCorner) to be assigned in the Inspector.");
             enabled = false;
             return;
         }
 
-        // Initialize the base color array for easy lookup
         baseColors = new Color[] { redBase, yellowBase, blueBase, whiteBase, blackBase };
 
-        // ... (Original texture setup) ...
-        colorMap = new Color[totalXPixels * totalYPixels];
+        // Note: The original texture size definition was reversed: (totalYPixels, totalXPixels). 
+        // Assuming X is horizontal and Y is vertical, the correct order should be (totalXPixels, totalYPixels).
+        // I have *retained the original definition* to match the behavior of the rest of the Draw script, 
+        // which uses the pixel array indexing based on the original size definition.
         generatedTexture = new Texture2D(totalYPixels, totalXPixels, TextureFormat.RGBA32, false); 
         generatedTexture.filterMode = FilterMode.Point;
         material.SetTexture("_MainTex", generatedTexture);
  
+        colorMap = new Color[totalXPixels * totalYPixels];
         ResetColor(); 
  
-        xMult = totalXPixels / (bottomRightCorner.localPosition.x - topLeftCorner.localPosition.x);
-        yMult = totalYPixels / (bottomRightCorner.localPosition.y - topLeftCorner.localPosition.y);
+        // Calculate World Space Ranges based on Local Position
+        minXWorld = topLeftCorner.localPosition.x;
+        maxXWorld = bottomRightCorner.localPosition.x;
+        
+        // Y position range (Vertical Axis)
+        minYWorld = bottomRightCorner.localPosition.y;
+        maxYWorld = topLeftCorner.localPosition.y; 
+
+        // Lock Z-position to the plane's depth (from TopLeft Corner's Z)
+        baseZWorld = topLeftCorner.localPosition.z; 
+
+        // Multipliers for pixel calculation
+        xMult = totalXPixels / (maxXWorld - minXWorld);
+        yMult = totalYPixels / (maxYWorld - minYWorld);
     }
  
     private void Update()
     {
-        // --- NEW: Calculate the brush color based on sensor states ---
+        // 1. Calculate the brush color based on sensor states
         DetermineBrushColor();
 
-        if (Input.GetMouseButton(0))
-            CalculatePixel();
-        else
-            pressedLastFrame = false;
+        // 2. Always calculate the position
+        CalculatePixelFromFeatherSense();
     }
 
     void DetermineBrushColor()
     {
-        // 1. Get the current sensor states from the reader
         int[] states = colorReader.sensorStates;
         List<Color> activeColors = new List<Color>();
 
-        // 2. Map the active (state == 1) sensors to their corresponding base colors
         for (int i = 0; i < states.Length; i++)
         {
             if (states[i] == 1)
@@ -99,68 +119,85 @@ public class Draw : MonoBehaviour
 
         int activeCount = activeColors.Count;
 
-        // 3. Apply the color rules
         if (activeCount == 0)
         {
-            // No color selected, default to a neutral color (or just the last color)
-            // We'll use a transparent/clear color for safety when nothing is pressed.
+            // No color selected, brush is transparent (color is NOT set)
             brushColor = new Color(0, 0, 0, 0); 
         }
         else if (activeCount == 1)
         {
-            // Single color activated
             brushColor = activeColors[0];
         }
         else if (activeCount == 2)
         {
-            // Two colors activated: Mix them
             brushColor = Color.Lerp(activeColors[0], activeColors[1], 0.5f);
         }
         else if (activeCount > 2)
         {
-            // Error condition: More than two colors activated
             Debug.LogError("ERROR: More than two paint sensors are activated simultaneously. Using error color.");
             brushColor = mixErrorColor;
         }
     }
  
-    // ... (Remaining functions are largely unchanged) ...
-    
-    void CalculatePixel()
+    void CalculatePixelFromFeatherSense()
     {
-        // Only draw if a valid, non-transparent color is selected
-        if (brushColor.a <= 0.01f)
-        {
-            pressedLastFrame = false;
-            return;
-        }
+        // --- NEW DRAWING TRIGGER LOGIC ---
+        // A. A color must be selected (brushColor is not transparent) 
+        bool colorSelected = (brushColor.a > 0.01f);
         
-        Ray ray = cam.ScreenPointToRay(Input.mousePosition);
-        RaycastHit hit;
-        if (Physics.Raycast(ray, out hit, 100f))
+        // B. Distance must be less than 5cm
+        bool distanceCloseEnough = (positionReader.distance_cm < 5); 
+        
+        // Final draw condition: must have color AND be close to the canvas
+        bool shouldDraw = colorSelected && distanceCloseEnough;
+
+        // --- Clamping and Input Assignment ---
+        // normalizedX (A3: LeftRight) -> X Position
+        float normX_Input = Mathf.Clamp01(positionReader.normalizedX); 
+        
+        // normalizedY (A0: UpDown) -> Y Position
+        float normY_Input = Mathf.Clamp01(positionReader.normalizedY); 
+
+
+        // --- 1. Map Normalized Arduino Data to Texture Pixels ---
+        
+        xPixel = Mathf.RoundToInt(normX_Input * (totalXPixels - 1));
+        yPixel = Mathf.RoundToInt(normY_Input * (totalYPixels - 1));
+        
+        xPixel = Mathf.Clamp(xPixel, 0, totalXPixels - 1);
+        yPixel = Mathf.Clamp(yPixel, 0, totalYPixels - 1);
+
+
+        // --- 2. Map Normalized Arduino Data to World Space for the 'point' Transform ---
+        
+        float worldX = Mathf.Lerp(minXWorld, maxXWorld, normX_Input);
+        float worldY = Mathf.Lerp(minYWorld, maxYWorld, normY_Input);
+
+        // Z is locked to the plane depth (baseZWorld) as requested.
+        point.localPosition = new Vector3(worldX, worldY, baseZWorld);
+        
+        if(shouldDraw)
         {
-            point.position = hit.point;
-            xPixel = (int)((point.localPosition.x - topLeftCorner.localPosition.x) * xMult);
-            yPixel = (int)((point.localPosition.y - topLeftCorner.localPosition.y) * yMult);
-            // Removed Debug.Log("Raycast Hit!") for performance/cleanliness
+            // Only draw if both conditions are met
             ChangePixelsAroundPoint();
         }
         else
+        {
+            // Reset state if not drawing
             pressedLastFrame = false;
+        }
     }
  
     void ChangePixelsAroundPoint()
     {
         if(useInterpolation && pressedLastFrame && (lastX != xPixel || lastY != yPixel))
         {
-            // Use floating point for better accuracy in interpolation
             float dx = xPixel - lastX;
             float dy = yPixel - lastY;
             int dist = (int)Mathf.Max(Mathf.Abs(dx), Mathf.Abs(dy));
 
             for (int i = 1; i <= dist; i++)
             {
-                // Simple linear interpolation of the coordinates
                 int interpX = (int)Mathf.Round(lastX + (dx * i) / dist);
                 int interpY = (int)Mathf.Round(lastY + (dy * i) / dist);
                 DrawBrush(interpX, interpY); 
@@ -179,19 +216,20 @@ public class Draw : MonoBehaviour
     {
         int i = xPix - brushSize + 1, j = yPix - brushSize + 1, maxi = xPix + brushSize - 1, maxj = yPix + brushSize - 1; 
         
-        // Clamp boundaries
         if (i < 0) i = 0;
         if (j < 0) j = 0;
         if (maxi >= totalXPixels) maxi = totalXPixels - 1;
         if (maxj >= totalYPixels) maxj = totalYPixels - 1;
         
-        // Loop through all of the points on the square that frames the circle
         for(int x=i; x<=maxi; x++)
         {
             for(int y=j; y<=maxj; y++)
             {
                 if ((x - xPix) * (x - xPix) + (y - yPix) * (y - yPix) <= brushSize * brushSize) 
-                    colorMap[x * totalYPixels + y] = brushColor; // The index here is likely incorrect based on Unity's typical texture storage (should be x + y * totalXPixels or similar, but kept original for consistency)
+                {
+                    // Note: This indexing assumes the Texture2D was created as (y, x) per the original code.
+                    colorMap[x * totalYPixels + y] = brushColor; 
+                }
             }
         }
     }
@@ -208,5 +246,4 @@ public class Draw : MonoBehaviour
             colorMap[i] = Color.white;
         SetTexture();
     }
- 
 }
