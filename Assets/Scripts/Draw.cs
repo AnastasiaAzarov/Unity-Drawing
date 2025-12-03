@@ -1,6 +1,7 @@
 using UnityEngine;
 using System.Collections.Generic;
 using System.Linq; 
+using System.IO; // <--- NEW: Required for file operations (PNG export)
 
 public class Draw : MonoBehaviour
 {
@@ -26,7 +27,10 @@ public class Draw : MonoBehaviour
     public Camera cam;
     public int totalXPixels = 1024;
     public int totalYPixels = 512;
-    public int brushSize = 4;
+    
+    // CHANGED: brushSize is now a public float to be controlled by the potentiometer
+    [Tooltip("Brush size, controlled by the potentiometer (Range 1.0 to 30.0).")] 
+    public float brushSize = 4f; 
     
     [HideInInspector] 
     public Color brushColor; 
@@ -68,16 +72,12 @@ public class Draw : MonoBehaviour
 
         baseColors = new Color[] { redBase, yellowBase, blueBase, whiteBase, blackBase };
 
-        // Note: The original texture size definition was reversed: (totalYPixels, totalXPixels). 
-        // Assuming X is horizontal and Y is vertical, the correct order should be (totalXPixels, totalYPixels).
-        // I have *retained the original definition* to match the behavior of the rest of the Draw script, 
-        // which uses the pixel array indexing based on the original size definition.
         generatedTexture = new Texture2D(totalYPixels, totalXPixels, TextureFormat.RGBA32, false); 
         generatedTexture.filterMode = FilterMode.Point;
         material.SetTexture("_MainTex", generatedTexture);
  
         colorMap = new Color[totalXPixels * totalYPixels];
-        ResetColor(); 
+        ResetCanvas(); // Call the new public reset method here
  
         // Calculate World Space Ranges based on Local Position
         minXWorld = topLeftCorner.localPosition.x;
@@ -99,9 +99,22 @@ public class Draw : MonoBehaviour
     {
         // 1. Calculate the brush color based on sensor states
         DetermineBrushColor();
+        
+        // Update brushSize using the normalized potentiometer value
+        UpdateBrushSize();
 
         // 2. Always calculate the position
         CalculatePixelFromFeatherSense();
+    }
+    
+    // NEW FUNCTION: Updates the brush size using the potentiometer input
+    void UpdateBrushSize()
+    {
+        if (positionReader != null)
+        {
+            // Assign the normalized potentiometer value (1.0 to 30.0) directly to brushSize
+            brushSize = positionReader.normalizedPotentiometer;
+        }
     }
 
     void DetermineBrushColor()
@@ -214,7 +227,11 @@ public class Draw : MonoBehaviour
  
     void DrawBrush(int xPix, int yPix)
     {
-        int i = xPix - brushSize + 1, j = yPix - brushSize + 1, maxi = xPix + brushSize - 1, maxj = yPix + brushSize - 1; 
+        // CAST brushSize (float) to int for loop bounds
+        int brushSizeInt = Mathf.CeilToInt(brushSize); 
+        
+        // Use the integer brush size for array indexing and loop bounds
+        int i = xPix - brushSizeInt + 1, j = yPix - brushSizeInt + 1, maxi = xPix + brushSizeInt - 1, maxj = yPix + brushSizeInt - 1; 
         
         if (i < 0) i = 0;
         if (j < 0) j = 0;
@@ -225,6 +242,8 @@ public class Draw : MonoBehaviour
         {
             for(int y=j; y<=maxj; y++)
             {
+                // Note: The circle calculation must still use the original float brushSize 
+                // for accurate radius checking, if we want sub-integer sensitivity.
                 if ((x - xPix) * (x - xPix) + (y - yPix) * (y - yPix) <= brushSize * brushSize) 
                 {
                     // Note: This indexing assumes the Texture2D was created as (y, x) per the original code.
@@ -240,10 +259,46 @@ public class Draw : MonoBehaviour
         generatedTexture.Apply();
     }
  
-    void ResetColor()
+    /// <summary>
+    /// Resets the canvas to a clean white color.
+    /// This is exposed as a public method to be called by a UI Button.
+    /// </summary>
+    public void ResetCanvas() // <--- MADE PUBLIC
     {
         for (int i = 0; i < colorMap.Length; i++)
             colorMap[i] = Color.white;
         SetTexture();
+        Debug.Log("Canvas has been reset.");
+    }
+    
+    /// <summary>
+    /// Encodes the current generated texture to PNG format and saves it to the device's persistent data path.
+    /// This is exposed as a public method to be called by a UI Button.
+    /// </summary>
+    public void ExportCanvasToPNG() // <--- NEW PUBLIC METHOD
+    {
+        if (generatedTexture == null)
+        {
+            Debug.LogError("Texture not initialized. Cannot export.");
+            return;
+        }
+
+        // 1. Encode the texture into PNG bytes
+        byte[] bytes = generatedTexture.EncodeToPNG();
+        
+        // 2. Define the file path and name
+        string fileName = $"Drawing_{System.DateTime.Now:yyyyMMdd_HHmmss}.png";
+        string filePath = Path.Combine(Application.persistentDataPath, fileName);
+        
+        try
+        {
+            // 3. Write the bytes to the file system
+            File.WriteAllBytes(filePath, bytes);
+            Debug.Log($"Successfully exported canvas to: {filePath}");
+        }
+        catch (System.Exception e)
+        {
+            Debug.LogError($"Failed to export canvas: {e.Message}");
+        }
     }
 }

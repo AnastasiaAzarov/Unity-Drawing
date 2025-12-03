@@ -16,6 +16,14 @@ public class FeatherSenseReader : MonoBehaviour
     // A3 (LeftRight) now controls X Position
     private const float A3_MIN = 0f;
     private const float A3_MAX = 920f; 
+    
+    // --- New Potentiometer Constants ---
+    // Raw Range for A1 Potentiometer
+    private const float A1_MIN = 0f;
+    private const float A1_MAX = 900f;
+    // Normalized Range for A1 Potentiometer (1 to 30)
+    private const float NORM_A1_MIN = 1f;
+    private const float NORM_A1_MAX = 30f; 
 
     // --- Public Normalized Sensor Data ---
     [Header("Normalized Brush Position (0.0 to 1.0)")]
@@ -27,15 +35,21 @@ public class FeatherSenseReader : MonoBehaviour
     [Range(0.0f, 1.0f)]
     public float normalizedY = 0.5f; 
     
-    // Z is no longer a factor in movement or trigger.
     [Tooltip("Z/Pressure: Unused for drawing logic (0.0)")]
     [Range(0.0f, 1.0f)]
     public float normalizedZ = 0.0f; 
 
     [Header("Ultrasonic Distance")]
     [Tooltip("Distance from the SR04 sensor in centimeters.")]
-    public int distance_cm = 999; // New variable for the fourth value
+    public int distance_cm = 999; 
 
+    [Header("Potentiometer Value")] 
+    [Tooltip("Raw A1 Potentiometer value (0-1023)")]
+    public int rawPotentiometer = 0; 
+    
+    [Tooltip("A1 Potentiometer value mapped from 1.0 to 30.0")] // <--- NEW TOOLTIP
+    public float normalizedPotentiometer = 1.0f; // <--- NEW NORMALIZED VARIABLE
+    
     // --- Internal Serial Communication ---
     private SerialPort serialPort;
     private bool isRunning = false;
@@ -112,13 +126,14 @@ public class FeatherSenseReader : MonoBehaviour
     {
         string[] values = data.Split(',');
         
-        // Arduino now sends A0, A2, A3, Distance_cm (4 values)
-        if (values.Length == 4)
+        // Arduino sends A0, A2, A3, Distance_cm, A1 (5 values)
+        if (values.Length == 5) 
         {
             if (int.TryParse(values[0].Trim(), out int rawA0) &&         // 0: UpDown
                 int.TryParse(values[1].Trim(), out int rawA2) &&         // 1: FrontBack (Ignored for position)
                 int.TryParse(values[2].Trim(), out int rawA3) &&         // 2: LeftRight
-                int.TryParse(values[3].Trim(), out int rawDistance))     // 3: Distance
+                int.TryParse(values[3].Trim(), out int rawDistance) &&   // 3: Distance
+                int.TryParse(values[4].Trim(), out int rawA1))           // 4: Potentiometer
             {
                 // 1. A3 (LeftRight) maps to normalizedX (Horizontal Position)
                 normalizedX = Mathf.InverseLerp(A3_MIN, A3_MAX, rawA3);
@@ -131,14 +146,28 @@ public class FeatherSenseReader : MonoBehaviour
                 
                 // 4. Update Distance value
                 distance_cm = rawDistance;
+                
+                // 5. Update Potentiometer values
+                rawPotentiometer = rawA1;
+                
+                // Normalize A1 (Potentiometer) from (0 to 900) to (1.0 to 30.0)
+                normalizedPotentiometer = Remap(rawPotentiometer, A1_MIN, A1_MAX, NORM_A1_MIN, NORM_A1_MAX);
             }
         }
         else
         {
-            // Log an error if the data packet length is unexpected
-            Debug.LogWarning($"Received malformed data packet (Expected 4 values, got {values.Length}): {data}");
+            Debug.LogWarning($"Received malformed data packet (Expected 5 values, got {values.Length}): {data}");
         }
     }
+    private float Remap(float value, float oldMin, float oldMax, float newMin, float newMax)
+    {
+        // 1. Normalize the value from the old range (0.0 to 1.0)
+        float normalized = (value - oldMin) / (oldMax - oldMin);
+        
+        // 2. Scale the normalized value to the new range
+        return Mathf.Lerp(newMin, newMax, normalized);
+    }
+
 
     private void OnApplicationQuit()
     {
